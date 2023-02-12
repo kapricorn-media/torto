@@ -1,10 +1,10 @@
 const std = @import("std");
 const mach = @import("deps/mach/build.zig");
-const Pkg = std.build.Pkg;
 
-pub fn build(b: *std.build.Builder) !void {
+pub fn build(b: *std.Build) !void
+{
     const target = b.standardTargetOptions(.{});
-    const mode = b.standardReleaseOptions();
+    const optimize = b.standardOptimizeOption(.{});
     const options = mach.Options{ .core = .{
         .gpu_dawn_options = .{
             .from_source = b.option(bool, "dawn-from-source", "Build Dawn from source") orelse false,
@@ -14,12 +14,27 @@ pub fn build(b: *std.build.Builder) !void {
 
     try ensureDependencies(b.allocator);
 
+    const zmath = moduleZmath(b);
+    const zmathDep = std.build.ModuleDependency {
+        .name = "zmath",
+        .module = zmath,
+    };
+    const zigimg = moduleZmath(b);
+    const zigimgDep = std.build.ModuleDependency {
+        .name = "zigimg",
+        .module = zigimg,
+    };
+    const assets = moduleZmath(b);
+    const assetsDep = std.build.ModuleDependency {
+        .name = "assets",
+        .module = assets,
+    };
     const app = try mach.App.init(b, .{
         .name = "impossible-bosses",
         .src = "src/main.zig",
         .target = target,
-        .mode = mode,
-        .deps = &.{ Packages.zmath, Packages.zigimg, Packages.assets },
+        .optimize = optimize,
+        .deps = &.{ zmathDep, zigimgDep, assetsDep },
         .res_dirs = null,
         .watch_paths = &.{},
         // .use_freetype = "freetype",
@@ -130,29 +145,26 @@ pub fn build(b: *std.build.Builder) !void {
     // compile_all.dependOn(b.getInstallStep());
 }
 
-const Packages = struct {
-    // Declared here because submodule may not be cloned at the time build.zig runs.
-    const zmath = Pkg{
-        .name = "zmath",
-        .source = .{ .path = "deps/zmath/src/zmath.zig" },
-    };
-    const zigimg = Pkg{
-        .name = "zigimg",
-        .source = .{ .path = "deps/zigimg/zigimg.zig" },
-    };
-    // const model3d = Pkg{
-    //     .name = "model3d",
-    //     .source = .{ .path = "libs/mach/libs/model3d/src/main.zig" },
-    // };
-    // const mach_imgui = Pkg{
-    //     .name = "mach-imgui",
-    //     .source = .{ .path = "libs/imgui/src/main.zig" },
-    // };
-    const assets = Pkg{
-        .name = "assets",
-        .source = .{ .path = "assets/assets.zig" },
-    };
-};
+pub fn moduleZmath(b: *std.Build) *std.build.Module {
+    return b.createModule(.{
+        .source_file = .{ .path = "deps/zmath/src/zmath.zig" },
+        .dependencies = &.{},
+    });
+}
+
+pub fn moduleZigimg(b: *std.Build) *std.build.Module {
+    return b.createModule(.{
+        .source_file = .{ .path = "deps/zigimg/zigimg.zig" },
+        .dependencies = &.{},
+    });
+}
+
+pub fn moduleAssets(b: *std.Build) *std.build.Module {
+    return b.createModule(.{
+        .source_file = .{ .path = "assets/assets.zig" },
+        .dependencies = &.{},
+    });
+}
 
 pub fn copyFile(src_path: []const u8, dst_path: []const u8) void {
     std.fs.cwd().makePath(std.fs.path.dirname(dst_path).?) catch unreachable;
