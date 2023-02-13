@@ -4,6 +4,3 @@
 [submodule "deps/zigimg"]
 	path = deps/zigimg
 	url = https://github.com/slimsag/zigimg.git
-[submodule "deps/zmath"]
-	path = deps/zmath
-	url = https://github.com/machlibs/zmath.git
