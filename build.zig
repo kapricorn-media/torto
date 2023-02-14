@@ -147,7 +147,7 @@ pub fn build(b: *std.Build) !void
 
 pub fn moduleZmath(b: *std.Build) *std.build.Module {
     return b.createModule(.{
-        .source_file = .{ .path = "deps/zmath/src/zmath.zig" },
+        .source_file = .{ .path = "deps/zig-gamedev/libs/zmath/src/zmath.zig" },
         .dependencies = &.{},
     });
 }
@@ -182,7 +182,7 @@ fn sdkPath(comptime suffix: []const u8) []const u8 {
 fn ensureDependencies(allocator: std.mem.Allocator) !void {
     ensureGit(allocator);
     try ensureSubmodule(allocator, "deps/mach");
-    try ensureSubmodule(allocator, "deps/zmath");
+    try ensureSubmodule(allocator, "deps/zig-gamedev");
     try ensureSubmodule(allocator, "deps/zigimg");
 }
 

@@ -4,3 +4,6 @@
 [submodule "deps/zigimg"]
 	path = deps/zigimg
 	url = https://github.com/slimsag/zigimg.git
+[submodule "deps/zig-gamedev"]
+	path = deps/zig-gamedev
+	url = https://github.com/michal-z/zig-gamedev.git
