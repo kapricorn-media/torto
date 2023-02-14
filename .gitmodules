@@ -7,3 +7,6 @@
 [submodule "deps/zig-gamedev"]
 	path = deps/zig-gamedev
 	url = https://github.com/michal-z/zig-gamedev.git
+[submodule "deps/zmath"]
+	path = deps/zmath
+	url = https://github.com/machlibs/zmath.git
