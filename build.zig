@@ -30,6 +30,11 @@ pub fn build(b: *std.build.Builder) !void {
     try app.link(options);
     app.install();
 
+    const runCmd = try app.run();
+    runCmd.dependOn(&app.getInstallStep().?.step);
+    const runStep = b.step("run", "Run the app");
+    runStep.dependOn(runCmd);
+
     const runTests = b.step("test", "Run tests");
     const testSrcs = [_][]const u8 {
     };
