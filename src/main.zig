@@ -1,11 +1,13 @@
 const std = @import("std");
+
 const mach = @import("mach");
 const gpu = @import("gpu");
 const glfw = @import("glfw");
 const zm = @import("zmath");
 const zigimg = @import("zigimg");
-const Vertex = @import("cube_mesh.zig").Vertex;
-const vertices = @import("cube_mesh.zig").vertices;
+
+const vertices = @import("vertices.zig");
+const Vertex = vertices.Vertex;
 const assets = @import("assets");
 
 pub const App = @This();
@@ -22,7 +24,7 @@ window_title_timer: mach.Timer,
 pipeline: *gpu.RenderPipeline,
 queue: *gpu.Queue,
 vertex_buffer: *gpu.Buffer,
-uniform_buffer: *gpu.Buffer,
+// uniform_buffer: *gpu.Buffer,
 bind_group: *gpu.BindGroup,
 depth_texture: *gpu.Texture,
 depth_texture_view: *gpu.TextureView,
@@ -34,11 +36,11 @@ pub fn init(app: *App) !void {
     const shader_module = app.core.device().createShaderModuleWGSL("shader.wgsl", @embedFile("shader.wgsl"));
 
     const vertex_attributes = [_]gpu.VertexAttribute{
-        .{ .format = .float32x4, .offset = @offsetOf(Vertex, "pos"), .shader_location = 0 },
-        .{ .format = .float32x2, .offset = @offsetOf(Vertex, "uv"), .shader_location = 1 },
+        .{ .format = .float32x4, .offset = @offsetOf(vertices.Vertex, "pos"), .shader_location = 0 },
+        .{ .format = .float32x2, .offset = @offsetOf(vertices.Vertex, "uv"), .shader_location = 1 },
     };
     const vertex_buffer_layout = gpu.VertexBufferLayout.init(.{
-        .array_stride = @sizeOf(Vertex),
+        .array_stride = @sizeOf(vertices.Vertex),
         .step_mode = .vertex,
         .attributes = &vertex_attributes,
     });
@@ -91,11 +93,11 @@ pub fn init(app: *App) !void {
 
     const vertex_buffer = app.core.device().createBuffer(&.{
         .usage = .{ .vertex = true },
-        .size = @sizeOf(Vertex) * vertices.len,
+        .size = @sizeOf(vertices.Vertex) * vertices.quad.len,
         .mapped_at_creation = true,
     });
-    var vertex_mapped = vertex_buffer.getMappedRange(Vertex, 0, vertices.len);
-    std.mem.copy(Vertex, vertex_mapped.?, vertices[0..]);
+    var vertex_mapped = vertex_buffer.getMappedRange(vertices.Vertex, 0, vertices.quad.len);
+    std.mem.copy(vertices.Vertex, vertex_mapped.?, vertices.quad[0..]);
     vertex_buffer.unmap();
 
     // Create a sampler with linear filtering for smooth interpolation.
@@ -130,19 +132,19 @@ pub fn init(app: *App) !void {
         else => @panic("unsupported image color format"),
     }
 
-    const uniform_buffer = app.core.device().createBuffer(&.{
-        .usage = .{ .copy_dst = true, .uniform = true },
-        .size = @sizeOf(UniformBufferObject),
-        .mapped_at_creation = false,
-    });
+    // const uniform_buffer = app.core.device().createBuffer(&.{
+    //     .usage = .{ .copy_dst = true, .uniform = true },
+    //     .size = @sizeOf(UniformBufferObject),
+    //     .mapped_at_creation = false,
+    // });
 
     const bind_group = app.core.device().createBindGroup(
         &gpu.BindGroup.Descriptor.init(.{
             .layout = pipeline.getBindGroupLayout(0),
             .entries = &.{
-                gpu.BindGroup.Entry.buffer(0, uniform_buffer, 0, @sizeOf(UniformBufferObject)),
-                gpu.BindGroup.Entry.sampler(1, sampler),
-                gpu.BindGroup.Entry.textureView(2, cube_texture.createView(&gpu.TextureView.Descriptor{})),
+                // gpu.BindGroup.Entry.buffer(0, uniform_buffer, 0, @sizeOf(UniformBufferObject)),
+                gpu.BindGroup.Entry.sampler(0, sampler),
+                gpu.BindGroup.Entry.textureView(1, cube_texture.createView(&gpu.TextureView.Descriptor{})),
             },
         }),
     );
@@ -172,7 +174,7 @@ pub fn init(app: *App) !void {
     app.pipeline = pipeline;
     app.queue = queue;
     app.vertex_buffer = vertex_buffer;
-    app.uniform_buffer = uniform_buffer;
+    // app.uniform_buffer = uniform_buffer;
     app.bind_group = bind_group;
     app.depth_texture = depth_texture;
     app.depth_texture_view = depth_texture_view;
@@ -185,7 +187,7 @@ pub fn deinit(app: *App) void {
     defer app.core.deinit();
 
     app.vertex_buffer.release();
-    app.uniform_buffer.release();
+    // app.uniform_buffer.release();
     app.bind_group.release();
     app.depth_texture.release();
     app.depth_texture_view.release();
@@ -237,7 +239,7 @@ pub fn update(app: *App) !bool {
     const back_buffer_view = app.core.swapChain().getCurrentTextureView();
     const color_attachment = gpu.RenderPassColorAttachment{
         .view = back_buffer_view,
-        .clear_value = .{ .r = 0.5, .g = 0.5, .b = 0.5, .a = 0.0 },
+        .clear_value = .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 0.0 },
         .load_op = .clear,
         .store_op = .store,
     };
@@ -253,32 +255,32 @@ pub fn update(app: *App) !bool {
         },
     });
 
-    {
-        const time = app.timer.read();
-        const model = zm.mul(zm.rotationX(time * (std.math.pi / 2.0)), zm.rotationZ(time * (std.math.pi / 2.0)));
-        const view = zm.lookAtRh(
-            zm.f32x4(0, 4, 2, 1),
-            zm.f32x4(0, 0, 0, 1),
-            zm.f32x4(0, 0, 1, 0),
-        );
-        const proj = zm.perspectiveFovRh(
-            (std.math.pi / 4.0),
-            @intToFloat(f32, app.core.descriptor().width) / @intToFloat(f32, app.core.descriptor().height),
-            0.1,
-            10,
-        );
-        const mvp = zm.mul(zm.mul(model, view), proj);
-        const ubo = UniformBufferObject{
-            .mat = zm.transpose(mvp),
-        };
-        encoder.writeBuffer(app.uniform_buffer, 0, &[_]UniformBufferObject{ubo});
-    }
+    // {
+    //     const time = app.timer.read();
+    //     const model = zm.mul(zm.rotationX(time * (std.math.pi / 2.0)), zm.rotationZ(time * (std.math.pi / 2.0)));
+    //     const view = zm.lookAtRh(
+    //         zm.f32x4(0, 4, 2, 1),
+    //         zm.f32x4(0, 0, 0, 1),
+    //         zm.f32x4(0, 0, 1, 0),
+    //     );
+    //     const proj = zm.perspectiveFovRh(
+    //         (std.math.pi / 4.0),
+    //         @intToFloat(f32, app.core.descriptor().width) / @intToFloat(f32, app.core.descriptor().height),
+    //         0.1,
+    //         10,
+    //     );
+    //     const mvp = zm.mul(zm.mul(model, view), proj);
+    //     const ubo = UniformBufferObject{
+    //         .mat = zm.transpose(mvp),
+    //     };
+    //     encoder.writeBuffer(app.uniform_buffer, 0, &[_]UniformBufferObject{ubo});
+    // }
 
     const pass = encoder.beginRenderPass(&render_pass_info);
     pass.setPipeline(app.pipeline);
-    pass.setVertexBuffer(0, app.vertex_buffer, 0, @sizeOf(Vertex) * vertices.len);
+    pass.setVertexBuffer(0, app.vertex_buffer, 0, @sizeOf(vertices.Vertex) * vertices.quad.len);
     pass.setBindGroup(0, app.bind_group, &.{});
-    pass.draw(vertices.len, 1, 0, 0);
+    pass.draw(vertices.quad.len, 1, 0, 0);
     pass.end();
     pass.release();
 
@@ -294,7 +296,7 @@ pub fn update(app: *App) !bool {
     if (app.window_title_timer.read() >= 1.0) {
         app.window_title_timer.reset();
         var buf: [32]u8 = undefined;
-        const title = try std.fmt.bufPrintZ(&buf, "Textured Cube [ FPS: {d} ]", .{@floor(1 / delta_time)});
+        const title = try std.fmt.bufPrintZ(&buf, "Textured Quad [ FPS: {d} ]", .{@floor(1 / delta_time)});
         app.core.setTitle(title);
     }
 
