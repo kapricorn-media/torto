@@ -296,7 +296,7 @@ pub fn update(app: *App) !bool {
     if (app.window_title_timer.read() >= 1.0) {
         app.window_title_timer.reset();
         var buf: [32]u8 = undefined;
-        const title = try std.fmt.bufPrintZ(&buf, "Textured Quad [ FPS: {d} ]", .{@floor(1 / delta_time)});
+        const title = try std.fmt.bufPrintZ(&buf, "Torto [ FPS: {d} ]", .{@floor(1 / delta_time)});
         app.core.setTitle(title);
     }
 
