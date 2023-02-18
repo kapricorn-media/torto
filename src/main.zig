@@ -12,8 +12,11 @@ const assets = @import("assets");
 
 pub const App = @This();
 
-const UniformBufferObject = struct {
-    mat: zm.Mat,
+const UniformData = struct {
+    pos: @Vector(3, f32),
+    scale: @Vector(2, f32),
+    uvPos: @Vector(2, f32),
+    uvScale: @Vector(2, f32),
 };
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
@@ -23,26 +26,27 @@ fps_timer: mach.Timer,
 window_title_timer: mach.Timer,
 pipeline: *gpu.RenderPipeline,
 queue: *gpu.Queue,
-vertex_buffer: *gpu.Buffer,
-// uniform_buffer: *gpu.Buffer,
-bind_group: *gpu.BindGroup,
-depth_texture: *gpu.Texture,
-depth_texture_view: *gpu.TextureView,
+vertexBuffer: *gpu.Buffer,
+uniformBuffer: *gpu.Buffer,
+bindGroup: *gpu.BindGroup,
+depthTexture: *gpu.Texture,
+depthTextureView: *gpu.TextureView,
 
-pub fn init(app: *App) !void {
+pub fn init(app: *App) !void
+{
     const allocator = gpa.allocator();
     try app.core.init(allocator, .{});
 
-    const shader_module = app.core.device().createShaderModuleWGSL("shader.wgsl", @embedFile("shader.wgsl"));
+    const shaderModule = app.core.device().createShaderModuleWGSL("shader.wgsl", @embedFile("shader.wgsl"));
 
-    const vertex_attributes = [_]gpu.VertexAttribute{
-        .{ .format = .float32x4, .offset = @offsetOf(vertices.Vertex, "pos"), .shader_location = 0 },
+    const vertexAttributes = [_]gpu.VertexAttribute{
+        .{ .format = .float32x3, .offset = @offsetOf(vertices.Vertex, "pos"), .shader_location = 0 },
         .{ .format = .float32x2, .offset = @offsetOf(vertices.Vertex, "uv"), .shader_location = 1 },
     };
-    const vertex_buffer_layout = gpu.VertexBufferLayout.init(.{
+    const vertexBufferLayout = gpu.VertexBufferLayout.init(.{
         .array_stride = @sizeOf(vertices.Vertex),
         .step_mode = .vertex,
-        .attributes = &vertex_attributes,
+        .attributes = &vertexAttributes,
     });
 
     const blend = gpu.BlendState{
@@ -57,18 +61,18 @@ pub fn init(app: *App) !void {
             .dst_factor = .zero,
         },
     };
-    const color_target = gpu.ColorTargetState{
+    const colorTarget = gpu.ColorTargetState{
         .format = app.core.descriptor().format,
         .blend = &blend,
         .write_mask = gpu.ColorWriteMaskFlags.all,
     };
     const fragment = gpu.FragmentState.init(.{
-        .module = shader_module,
+        .module = shaderModule,
         .entry_point = "frag_main",
-        .targets = &.{color_target},
+        .targets = &.{colorTarget},
     });
 
-    const pipeline_descriptor = gpu.RenderPipeline.Descriptor{
+    const pipelineDescriptor = gpu.RenderPipeline.Descriptor{
         .fragment = &fragment,
         // Enable depth testing so that the fragment closest to the camera
         // is rendered in front.
@@ -78,9 +82,9 @@ pub fn init(app: *App) !void {
             .depth_compare = .less,
         },
         .vertex = gpu.VertexState.init(.{
-            .module = shader_module,
+            .module = shaderModule,
             .entry_point = "vertex_main",
-            .buffers = &.{vertex_buffer_layout},
+            .buffers = &.{vertexBufferLayout},
         }),
         .primitive = .{
             // Backface culling since the cube is solid piece of geometry.
@@ -89,16 +93,16 @@ pub fn init(app: *App) !void {
             .cull_mode = .back,
         },
     };
-    const pipeline = app.core.device().createRenderPipeline(&pipeline_descriptor);
+    const pipeline = app.core.device().createRenderPipeline(&pipelineDescriptor);
 
-    const vertex_buffer = app.core.device().createBuffer(&.{
+    const vertexBuffer = app.core.device().createBuffer(&.{
         .usage = .{ .vertex = true },
         .size = @sizeOf(vertices.Vertex) * vertices.quad.len,
         .mapped_at_creation = true,
     });
-    var vertex_mapped = vertex_buffer.getMappedRange(vertices.Vertex, 0, vertices.quad.len);
+    var vertex_mapped = vertexBuffer.getMappedRange(vertices.Vertex, 0, vertices.quad.len);
     std.mem.copy(vertices.Vertex, vertex_mapped.?, vertices.quad[0..]);
-    vertex_buffer.unmap();
+    vertexBuffer.unmap();
 
     // Create a sampler with linear filtering for smooth interpolation.
     const sampler = app.core.device().createSampler(&.{
@@ -118,38 +122,38 @@ pub fn init(app: *App) !void {
             .render_attachment = true,
         },
     });
-    const data_layout = gpu.Texture.DataLayout{
+    const dataLayout = gpu.Texture.DataLayout{
         .bytes_per_row = @intCast(u32, img.width * 4),
         .rows_per_image = @intCast(u32, img.height),
     };
     switch (img.pixels) {
-        .rgba32 => |pixels| queue.writeTexture(&.{ .texture = cube_texture }, &data_layout, &img_size, pixels),
+        .rgba32 => |pixels| queue.writeTexture(&.{ .texture = cube_texture }, &dataLayout, &img_size, pixels),
         .rgb24 => |pixels| {
             const data = try rgb24ToRgba32(allocator, pixels);
             defer data.deinit(allocator);
-            queue.writeTexture(&.{ .texture = cube_texture }, &data_layout, &img_size, data.rgba32);
+            queue.writeTexture(&.{ .texture = cube_texture }, &dataLayout, &img_size, data.rgba32);
         },
         else => @panic("unsupported image color format"),
     }
 
-    // const uniform_buffer = app.core.device().createBuffer(&.{
-    //     .usage = .{ .copy_dst = true, .uniform = true },
-    //     .size = @sizeOf(UniformBufferObject),
-    //     .mapped_at_creation = false,
-    // });
+    const uniformBuffer = app.core.device().createBuffer(&.{
+        .usage = .{ .copy_dst = true, .uniform = true },
+        .size = @sizeOf(UniformData),
+        .mapped_at_creation = false,
+    });
 
-    const bind_group = app.core.device().createBindGroup(
+    const bindGroup = app.core.device().createBindGroup(
         &gpu.BindGroup.Descriptor.init(.{
             .layout = pipeline.getBindGroupLayout(0),
             .entries = &.{
-                // gpu.BindGroup.Entry.buffer(0, uniform_buffer, 0, @sizeOf(UniformBufferObject)),
-                gpu.BindGroup.Entry.sampler(0, sampler),
-                gpu.BindGroup.Entry.textureView(1, cube_texture.createView(&gpu.TextureView.Descriptor{})),
+                gpu.BindGroup.Entry.buffer(0, uniformBuffer, 0, @sizeOf(UniformData)),
+                gpu.BindGroup.Entry.sampler(1, sampler),
+                gpu.BindGroup.Entry.textureView(2, cube_texture.createView(&gpu.TextureView.Descriptor{})),
             },
         }),
     );
 
-    const depth_texture = app.core.device().createTexture(&gpu.Texture.Descriptor{
+    const depthTexture = app.core.device().createTexture(&gpu.Texture.Descriptor{
         .size = gpu.Extent3D{
             .width = app.core.descriptor().width,
             .height = app.core.descriptor().height,
@@ -161,7 +165,7 @@ pub fn init(app: *App) !void {
         },
     });
 
-    const depth_texture_view = depth_texture.createView(&gpu.TextureView.Descriptor{
+    const depthTextureView = depthTexture.createView(&gpu.TextureView.Descriptor{
         .format = .depth24_plus,
         .dimension = .dimension_2d,
         .array_layer_count = 1,
@@ -173,27 +177,29 @@ pub fn init(app: *App) !void {
     app.window_title_timer = try mach.Timer.start();
     app.pipeline = pipeline;
     app.queue = queue;
-    app.vertex_buffer = vertex_buffer;
-    // app.uniform_buffer = uniform_buffer;
-    app.bind_group = bind_group;
-    app.depth_texture = depth_texture;
-    app.depth_texture_view = depth_texture_view;
+    app.vertexBuffer = vertexBuffer;
+    app.uniformBuffer = uniformBuffer;
+    app.bindGroup = bindGroup;
+    app.depthTexture = depthTexture;
+    app.depthTextureView = depthTextureView;
 
-    shader_module.release();
+    shaderModule.release();
 }
 
-pub fn deinit(app: *App) void {
+pub fn deinit(app: *App) void
+{
     defer _ = gpa.deinit();
     defer app.core.deinit();
 
-    app.vertex_buffer.release();
-    // app.uniform_buffer.release();
-    app.bind_group.release();
-    app.depth_texture.release();
-    app.depth_texture_view.release();
+    app.vertexBuffer.release();
+    app.uniformBuffer.release();
+    app.bindGroup.release();
+    app.depthTexture.release();
+    app.depthTextureView.release();
 }
 
-pub fn update(app: *App) !bool {
+pub fn update(app: *App) !bool
+{
     var iter = app.core.pollEvents();
     while (iter.next()) |event| {
         switch (event) {
@@ -209,9 +215,9 @@ pub fn update(app: *App) !bool {
             },
             .framebuffer_resize => |ev| {
                 // If window is resized, recreate depth buffer otherwise we cannot use it.
-                app.depth_texture.release();
+                app.depthTexture.release();
 
-                app.depth_texture = app.core.device().createTexture(&gpu.Texture.Descriptor{
+                app.depthTexture = app.core.device().createTexture(&gpu.Texture.Descriptor{
                     .size = gpu.Extent3D{
                         .width = ev.width,
                         .height = ev.height,
@@ -223,8 +229,8 @@ pub fn update(app: *App) !bool {
                     },
                 });
 
-                app.depth_texture_view.release();
-                app.depth_texture_view = app.depth_texture.createView(&gpu.TextureView.Descriptor{
+                app.depthTextureView.release();
+                app.depthTextureView = app.depthTexture.createView(&gpu.TextureView.Descriptor{
                     .format = .depth24_plus,
                     .dimension = .dimension_2d,
                     .array_layer_count = 1,
@@ -236,50 +242,43 @@ pub fn update(app: *App) !bool {
         }
     }
 
-    const back_buffer_view = app.core.swapChain().getCurrentTextureView();
-    const color_attachment = gpu.RenderPassColorAttachment{
-        .view = back_buffer_view,
+    const backBufferView = app.core.swapChain().getCurrentTextureView();
+    const colorAttachment = gpu.RenderPassColorAttachment{
+        .view = backBufferView,
         .clear_value = .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 0.0 },
         .load_op = .clear,
         .store_op = .store,
     };
 
     const encoder = app.core.device().createCommandEncoder(null);
-    const render_pass_info = gpu.RenderPassDescriptor.init(.{
-        .color_attachments = &.{color_attachment},
+    const renderPassInfo = gpu.RenderPassDescriptor.init(.{
+        .color_attachments = &.{colorAttachment},
         .depth_stencil_attachment = &.{
-            .view = app.depth_texture_view,
+            .view = app.depthTextureView,
             .depth_clear_value = 1.0,
             .depth_load_op = .clear,
             .depth_store_op = .store,
         },
     });
 
-    // {
-    //     const time = app.timer.read();
-    //     const model = zm.mul(zm.rotationX(time * (std.math.pi / 2.0)), zm.rotationZ(time * (std.math.pi / 2.0)));
-    //     const view = zm.lookAtRh(
-    //         zm.f32x4(0, 4, 2, 1),
-    //         zm.f32x4(0, 0, 0, 1),
-    //         zm.f32x4(0, 0, 1, 0),
-    //     );
-    //     const proj = zm.perspectiveFovRh(
-    //         (std.math.pi / 4.0),
-    //         @intToFloat(f32, app.core.descriptor().width) / @intToFloat(f32, app.core.descriptor().height),
-    //         0.1,
-    //         10,
-    //     );
-    //     const mvp = zm.mul(zm.mul(model, view), proj);
-    //     const ubo = UniformBufferObject{
-    //         .mat = zm.transpose(mvp),
-    //     };
-    //     encoder.writeBuffer(app.uniform_buffer, 0, &[_]UniformBufferObject{ubo});
-    // }
+    {
+        const time = app.timer.read();
+        const period = 1.0;
+        const modTime = std.math.modf(time / period);
+        const t = modTime.fpart;
+        const uniformData = UniformData{
+            .pos = .{ t * 0.5, t * 0.25, 0 },
+            .scale = .{ 1, 1 },
+            .uvPos = .{ 0, 0 },
+            .uvScale = .{ 1 - t * 0.2, 1 - t * 0.4 },
+        };
+        encoder.writeBuffer(app.uniformBuffer, 0, &[_]UniformData{uniformData});
+    }
 
-    const pass = encoder.beginRenderPass(&render_pass_info);
+    const pass = encoder.beginRenderPass(&renderPassInfo);
     pass.setPipeline(app.pipeline);
-    pass.setVertexBuffer(0, app.vertex_buffer, 0, @sizeOf(vertices.Vertex) * vertices.quad.len);
-    pass.setBindGroup(0, app.bind_group, &.{});
+    pass.setVertexBuffer(0, app.vertexBuffer, 0, @sizeOf(vertices.Vertex) * vertices.quad.len);
+    pass.setBindGroup(0, app.bindGroup, &.{});
     pass.draw(vertices.quad.len, 1, 0, 0);
     pass.end();
     pass.release();
@@ -290,7 +289,7 @@ pub fn update(app: *App) !bool {
     app.queue.submit(&[_]*gpu.CommandBuffer{command});
     command.release();
     app.core.swapChain().present();
-    back_buffer_view.release();
+    backBufferView.release();
 
     const delta_time = app.fps_timer.lap();
     if (app.window_title_timer.read() >= 1.0) {
