@@ -18,6 +18,33 @@ const UniformData = struct {
     uvPos: @Vector(2, f32),
     uvScale: @Vector(2, f32),
 };
+
+const Texture = enum(u8) {
+    Zig = 0,
+    Torto,
+};
+
+const TextureData = struct {
+};
+
+fn Assets(comptime TextureEnum: type) type
+{
+    const T = struct {
+        const numTextures = @typeInfo(TextureEnum).Enum.fields.len;
+        textures: [numTextures]TextureData,
+
+        const Self = @This();
+
+        fn init(self: *Self) !void
+        {
+            _ = self;
+        }
+    };
+    return T;
+}
+
+const MAX_INSTANCES = 512;
+
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
 core: mach.Core,
@@ -32,12 +59,14 @@ bindGroup: *gpu.BindGroup,
 depthTexture: *gpu.Texture,
 depthTextureView: *gpu.TextureView,
 
+assets: Assets(Texture),
+
 pub fn init(app: *App) !void
 {
     const allocator = gpa.allocator();
     try app.core.init(allocator, .{});
 
-    const shaderModule = app.core.device().createShaderModuleWGSL("shader.wgsl", @embedFile("shader.wgsl"));
+    const shaderModule = app.core.device().createShaderModuleWGSL("texQuads.wgsl", @embedFile("texQuads.wgsl"));
 
     const vertexAttributes = [_]gpu.VertexAttribute{
         .{ .format = .float32x3, .offset = @offsetOf(vertices.Vertex, "pos"), .shader_location = 0 },
@@ -68,7 +97,7 @@ pub fn init(app: *App) !void
     };
     const fragment = gpu.FragmentState.init(.{
         .module = shaderModule,
-        .entry_point = "frag_main",
+        .entry_point = "fragMain",
         .targets = &.{colorTarget},
     });
 
@@ -83,7 +112,7 @@ pub fn init(app: *App) !void
         },
         .vertex = gpu.VertexState.init(.{
             .module = shaderModule,
-            .entry_point = "vertex_main",
+            .entry_point = "vertexMain",
             .buffers = &.{vertexBufferLayout},
         }),
         .primitive = .{
@@ -100,8 +129,8 @@ pub fn init(app: *App) !void
         .size = @sizeOf(vertices.Vertex) * vertices.quad.len,
         .mapped_at_creation = true,
     });
-    var vertex_mapped = vertexBuffer.getMappedRange(vertices.Vertex, 0, vertices.quad.len);
-    std.mem.copy(vertices.Vertex, vertex_mapped.?, vertices.quad[0..]);
+    var vertexMapped = vertexBuffer.getMappedRange(vertices.Vertex, 0, vertices.quad.len);
+    std.mem.copy(vertices.Vertex, vertexMapped.?, vertices.quad[0..]);
     vertexBuffer.unmap();
 
     // Create a sampler with linear filtering for smooth interpolation.
@@ -113,7 +142,7 @@ pub fn init(app: *App) !void
     var img = try zigimg.Image.fromMemory(allocator, assets.gotta_go_fast_image);
     defer img.deinit();
     const img_size = gpu.Extent3D{ .width = @intCast(u32, img.width), .height = @intCast(u32, img.height) };
-    const cube_texture = app.core.device().createTexture(&.{
+    const texture1 = app.core.device().createTexture(&.{
         .size = img_size,
         .format = .rgba8_unorm,
         .usage = .{
@@ -127,18 +156,18 @@ pub fn init(app: *App) !void
         .rows_per_image = @intCast(u32, img.height),
     };
     switch (img.pixels) {
-        .rgba32 => |pixels| queue.writeTexture(&.{ .texture = cube_texture }, &dataLayout, &img_size, pixels),
+        .rgba32 => |pixels| queue.writeTexture(&.{ .texture = texture1 }, &dataLayout, &img_size, pixels),
         .rgb24 => |pixels| {
             const data = try rgb24ToRgba32(allocator, pixels);
             defer data.deinit(allocator);
-            queue.writeTexture(&.{ .texture = cube_texture }, &dataLayout, &img_size, data.rgba32);
+            queue.writeTexture(&.{ .texture = texture1 }, &dataLayout, &img_size, data.rgba32);
         },
         else => @panic("unsupported image color format"),
     }
 
     const uniformBuffer = app.core.device().createBuffer(&.{
         .usage = .{ .copy_dst = true, .uniform = true },
-        .size = @sizeOf(UniformData),
+        .size = @sizeOf(UniformData) * MAX_INSTANCES,
         .mapped_at_creation = false,
     });
 
@@ -146,9 +175,9 @@ pub fn init(app: *App) !void
         &gpu.BindGroup.Descriptor.init(.{
             .layout = pipeline.getBindGroupLayout(0),
             .entries = &.{
-                gpu.BindGroup.Entry.buffer(0, uniformBuffer, 0, @sizeOf(UniformData)),
+                gpu.BindGroup.Entry.buffer(0, uniformBuffer, 0, @sizeOf(UniformData) * MAX_INSTANCES),
                 gpu.BindGroup.Entry.sampler(1, sampler),
-                gpu.BindGroup.Entry.textureView(2, cube_texture.createView(&gpu.TextureView.Descriptor{})),
+                gpu.BindGroup.Entry.textureView(2, texture1.createView(&gpu.TextureView.Descriptor{})),
             },
         }),
     );
@@ -182,6 +211,8 @@ pub fn init(app: *App) !void
     app.bindGroup = bindGroup;
     app.depthTexture = depthTexture;
     app.depthTextureView = depthTextureView;
+
+    try app.assets.init();
 
     shaderModule.release();
 }
@@ -266,20 +297,27 @@ pub fn update(app: *App) !bool
         const period = 1.0;
         const modTime = std.math.modf(time / period);
         const t = modTime.fpart;
-        const uniformData = UniformData{
+        var uniforms: [4]UniformData = undefined;
+        uniforms[0] = UniformData{
             .pos = .{ t * 0.5, t * 0.25, 0 },
             .scale = .{ 1, 1 },
             .uvPos = .{ 0, 0 },
             .uvScale = .{ 1 - t * 0.2, 1 - t * 0.4 },
         };
-        encoder.writeBuffer(app.uniformBuffer, 0, &[_]UniformData{uniformData});
+        uniforms[1] = UniformData{
+            .pos = .{ -0.5, -0.5, 0 },
+            .scale = .{ 0.2, 0.2 },
+            .uvPos = .{ 0, 0 },
+            .uvScale = .{ 1 + t, 1 - t },
+        };
+        encoder.writeBuffer(app.uniformBuffer, 0, &uniforms);
     }
 
     const pass = encoder.beginRenderPass(&renderPassInfo);
     pass.setPipeline(app.pipeline);
     pass.setVertexBuffer(0, app.vertexBuffer, 0, @sizeOf(vertices.Vertex) * vertices.quad.len);
     pass.setBindGroup(0, app.bindGroup, &.{});
-    pass.draw(vertices.quad.len, 1, 0, 0);
+    pass.draw(vertices.quad.len, 2, 0, 0);
     pass.end();
     pass.release();
 
