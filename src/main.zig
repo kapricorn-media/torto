@@ -17,6 +17,7 @@ const UniformData = struct {
     scale: @Vector(2, f32),
     uvPos: @Vector(2, f32),
     uvScale: @Vector(2, f32),
+    textureIndex: u32,
 };
 
 const Texture = enum(u8) {
@@ -25,6 +26,7 @@ const Texture = enum(u8) {
 };
 
 const TextureData = struct {
+    texture: *gpu.Texture,
 };
 
 fn Assets(comptime TextureEnum: type) type
@@ -38,6 +40,48 @@ fn Assets(comptime TextureEnum: type) type
         fn init(self: *Self) !void
         {
             _ = self;
+        }
+
+        fn loadTexture(self: *Self, texture: TextureEnum, pngData: []const u8, device: *gpu.Device,  allocator: std.mem.Allocator) !void
+        {
+            var img = try zigimg.Image.fromMemory(allocator, pngData);
+            defer img.deinit();
+            const imgSize = gpu.Extent3D{
+                .width = @intCast(u32, img.width),
+                .height = @intCast(u32, img.height)
+            };
+            const tex = device.createTexture(&.{
+                .size = imgSize,
+                .format = .rgba8_unorm,
+                .usage = .{
+                    .texture_binding = true,
+                    .copy_dst = true,
+                    .render_attachment = true,
+                },
+            });
+            const dataLayout = gpu.Texture.DataLayout{
+                .bytes_per_row = @intCast(u32, img.width * 4),
+                .rows_per_image = @intCast(u32, img.height),
+            };
+            const queue = device.getQueue();
+            switch (img.pixels) {
+                .rgba32 => |pixels| queue.writeTexture(&.{ .texture = tex }, &dataLayout, &imgSize, pixels),
+                .rgb24 => |pixels| {
+                    const data = try rgb24ToRgba32(allocator, pixels);
+                    defer data.deinit(allocator);
+                    queue.writeTexture(&.{ .texture = tex }, &dataLayout, &imgSize, data.rgba32);
+                },
+                else => @panic("unsupported image color format"),
+            }
+
+            self.textures[@enumToInt(texture)] = .{
+                .texture = tex,
+            };
+        }
+
+        fn getTexture(self: *const Self, texture: TextureEnum) ?TextureData
+        {
+            return self.textures[@enumToInt(texture)];
         }
     };
     return T;
@@ -64,7 +108,9 @@ assets: Assets(Texture),
 pub fn init(app: *App) !void
 {
     const allocator = gpa.allocator();
-    try app.core.init(allocator, .{});
+    try app.core.init(allocator, .{
+        .size = .{ .width = 1280, .height = 800 },
+    });
 
     const shaderModule = app.core.device().createShaderModuleWGSL("texQuads.wgsl", @embedFile("texQuads.wgsl"));
 
@@ -133,37 +179,14 @@ pub fn init(app: *App) !void
     std.mem.copy(vertices.Vertex, vertexMapped.?, vertices.quad[0..]);
     vertexBuffer.unmap();
 
+    try app.assets.loadTexture(Texture.Zig, assets.gotta_go_fast_image, app.core.device(), allocator);
+    try app.assets.loadTexture(Texture.Torto, assets.torto, app.core.device(), allocator);
+
     // Create a sampler with linear filtering for smooth interpolation.
     const sampler = app.core.device().createSampler(&.{
         .mag_filter = .linear,
         .min_filter = .linear,
     });
-    const queue = app.core.device().getQueue();
-    var img = try zigimg.Image.fromMemory(allocator, assets.gotta_go_fast_image);
-    defer img.deinit();
-    const img_size = gpu.Extent3D{ .width = @intCast(u32, img.width), .height = @intCast(u32, img.height) };
-    const texture1 = app.core.device().createTexture(&.{
-        .size = img_size,
-        .format = .rgba8_unorm,
-        .usage = .{
-            .texture_binding = true,
-            .copy_dst = true,
-            .render_attachment = true,
-        },
-    });
-    const dataLayout = gpu.Texture.DataLayout{
-        .bytes_per_row = @intCast(u32, img.width * 4),
-        .rows_per_image = @intCast(u32, img.height),
-    };
-    switch (img.pixels) {
-        .rgba32 => |pixels| queue.writeTexture(&.{ .texture = texture1 }, &dataLayout, &img_size, pixels),
-        .rgb24 => |pixels| {
-            const data = try rgb24ToRgba32(allocator, pixels);
-            defer data.deinit(allocator);
-            queue.writeTexture(&.{ .texture = texture1 }, &dataLayout, &img_size, data.rgba32);
-        },
-        else => @panic("unsupported image color format"),
-    }
 
     const uniformBuffer = app.core.device().createBuffer(&.{
         .usage = .{ .copy_dst = true, .uniform = true },
@@ -171,13 +194,21 @@ pub fn init(app: *App) !void
         .mapped_at_creation = false,
     });
 
+    const zigTexture = app.assets.getTexture(Texture.Zig) orelse return error.NoZig;
+    const tortoTexture = app.assets.getTexture(Texture.Torto) orelse return error.NoTorto;
+
     const bindGroup = app.core.device().createBindGroup(
         &gpu.BindGroup.Descriptor.init(.{
             .layout = pipeline.getBindGroupLayout(0),
             .entries = &.{
                 gpu.BindGroup.Entry.buffer(0, uniformBuffer, 0, @sizeOf(UniformData) * MAX_INSTANCES),
                 gpu.BindGroup.Entry.sampler(1, sampler),
-                gpu.BindGroup.Entry.textureView(2, texture1.createView(&gpu.TextureView.Descriptor{})),
+                gpu.BindGroup.Entry.textureView(
+                    2, tortoTexture.texture.createView(&gpu.TextureView.Descriptor{})
+                ),
+                gpu.BindGroup.Entry.textureView(
+                    3, zigTexture.texture.createView(&gpu.TextureView.Descriptor{})
+                ),
             },
         }),
     );
@@ -205,7 +236,7 @@ pub fn init(app: *App) !void
     app.fps_timer = try mach.Timer.start();
     app.window_title_timer = try mach.Timer.start();
     app.pipeline = pipeline;
-    app.queue = queue;
+    app.queue = app.core.device().getQueue();
     app.vertexBuffer = vertexBuffer;
     app.uniformBuffer = uniformBuffer;
     app.bindGroup = bindGroup;
@@ -292,23 +323,26 @@ pub fn update(app: *App) !bool
         },
     });
 
+    var uniforms: [4]UniformData = undefined;
+
     {
         const time = app.timer.read();
         const period = 1.0;
         const modTime = std.math.modf(time / period);
         const t = modTime.fpart;
-        var uniforms: [4]UniformData = undefined;
         uniforms[0] = UniformData{
             .pos = .{ t * 0.5, t * 0.25, 0 },
             .scale = .{ 1, 1 },
             .uvPos = .{ 0, 0 },
             .uvScale = .{ 1 - t * 0.2, 1 - t * 0.4 },
+            .textureIndex = 0,
         };
         uniforms[1] = UniformData{
             .pos = .{ -0.5, -0.5, 0 },
             .scale = .{ 0.2, 0.2 },
             .uvPos = .{ 0, 0 },
             .uvScale = .{ 1 + t, 1 - t },
+            .textureIndex = 1,
         };
         encoder.writeBuffer(app.uniformBuffer, 0, &uniforms);
     }
