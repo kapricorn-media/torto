@@ -29,6 +29,15 @@ const TextureData = struct {
     texture: *gpu.Texture,
 };
 
+fn rgb24ToRgba32(allocator: std.mem.Allocator, in: []zigimg.color.Rgb24) !zigimg.color.PixelStorage {
+    const out = try zigimg.color.PixelStorage.init(allocator, .rgba32, in.len);
+    var i: usize = 0;
+    while (i < in.len) : (i += 1) {
+        out.rgba32[i] = zigimg.color.Rgba32{ .r = in[i].r, .g = in[i].g, .b = in[i].b, .a = 255 };
+    }
+    return out;
+}
+
 fn Assets(comptime TextureEnum: type) type
 {
     const T = struct {
@@ -64,15 +73,27 @@ fn Assets(comptime TextureEnum: type) type
                 .rows_per_image = @intCast(u32, img.height),
             };
             const queue = device.getQueue();
-            switch (img.pixels) {
-                .rgba32 => |pixels| queue.writeTexture(&.{ .texture = tex }, &dataLayout, &imgSize, pixels),
-                .rgb24 => |pixels| {
-                    const data = try rgb24ToRgba32(allocator, pixels);
-                    defer data.deinit(allocator);
-                    queue.writeTexture(&.{ .texture = tex }, &dataLayout, &imgSize, data.rgba32);
-                },
-                else => @panic("unsupported image color format"),
+            // TODO free if necessary
+            const dataRgba32 = blk: {
+                switch (img.pixels) {
+                    .rgba32 => |pixels| break :blk pixels,
+                    .rgb24 => |pixels| break :blk (try rgb24ToRgba32(allocator, pixels)).rgba32,
+                    else => @panic("unsupported image color format"),
+                }
+            };
+            // flip Y
+            var y: usize = 0;
+            const halfHeight = img.height / 2 - 1;
+            while (y < halfHeight) : (y += 1) {
+                const yOpposite = img.height - y - 1;
+                var x: usize = 0;
+                while (x < img.width) : (x += 1) {
+                    const temp = dataRgba32[y * img.width + x];
+                    dataRgba32[y * img.width + x] = dataRgba32[yOpposite * img.width + x];
+                    dataRgba32[yOpposite * img.width + x] = temp;
+                }
             }
+            queue.writeTexture(&.{ .texture = tex }, &dataLayout, &imgSize, dataRgba32);
 
             self.textures[@enumToInt(texture)] = .{
                 .texture = tex,
@@ -179,8 +200,8 @@ pub fn init(app: *App) !void
     std.mem.copy(vertices.Vertex, vertexMapped.?, vertices.quad[0..]);
     vertexBuffer.unmap();
 
-    try app.assets.loadTexture(Texture.Zig, assets.gotta_go_fast_image, app.core.device(), allocator);
-    try app.assets.loadTexture(Texture.Torto, assets.torto, app.core.device(), allocator);
+    try app.assets.loadTexture(Texture.Zig, assets.zigPng, app.core.device(), allocator);
+    try app.assets.loadTexture(Texture.Torto, assets.tortoPng, app.core.device(), allocator);
 
     // Create a sampler with linear filtering for smooth interpolation.
     const sampler = app.core.device().createSampler(&.{
@@ -372,13 +393,4 @@ pub fn update(app: *App) !bool
     }
 
     return false;
-}
-
-fn rgb24ToRgba32(allocator: std.mem.Allocator, in: []zigimg.color.Rgb24) !zigimg.color.PixelStorage {
-    const out = try zigimg.color.PixelStorage.init(allocator, .rgba32, in.len);
-    var i: usize = 0;
-    while (i < in.len) : (i += 1) {
-        out.rgba32[i] = zigimg.color.Rgba32{ .r = in[i].r, .g = in[i].g, .b = in[i].b, .a = 255 };
-    }
-    return out;
 }
