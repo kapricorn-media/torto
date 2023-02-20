@@ -6,116 +6,26 @@ const glfw = @import("glfw");
 const zm = @import("zmath");
 const zigimg = @import("zigimg");
 
+const input = @import("input.zig");
+const render = @import("render.zig");
+const torto = @import("torto.zig");
 const vertices = @import("vertices.zig");
 const Vertex = vertices.Vertex;
 const assets = @import("assets");
 
-pub const App = @This();
-
-const UniformData = struct {
-    pos: @Vector(3, f32),
-    scale: @Vector(2, f32),
-    uvPos: @Vector(2, f32),
-    uvScale: @Vector(2, f32),
-    textureIndex: u32,
-};
-
-const Texture = enum(u8) {
+pub const Texture = enum(u8) {
     Zig = 0,
     Torto,
 };
 
-const TextureData = struct {
-    texture: *gpu.Texture,
-};
-
-fn rgb24ToRgba32(allocator: std.mem.Allocator, in: []zigimg.color.Rgb24) !zigimg.color.PixelStorage {
-    const out = try zigimg.color.PixelStorage.init(allocator, .rgba32, in.len);
-    var i: usize = 0;
-    while (i < in.len) : (i += 1) {
-        out.rgba32[i] = zigimg.color.Rgba32{ .r = in[i].r, .g = in[i].g, .b = in[i].b, .a = 255 };
-    }
-    return out;
-}
-
-fn Assets(comptime TextureEnum: type) type
-{
-    const T = struct {
-        const numTextures = @typeInfo(TextureEnum).Enum.fields.len;
-        textures: [numTextures]TextureData,
-
-        const Self = @This();
-
-        fn init(self: *Self) !void
-        {
-            _ = self;
-        }
-
-        fn loadTexture(self: *Self, texture: TextureEnum, pngData: []const u8, device: *gpu.Device,  allocator: std.mem.Allocator) !void
-        {
-            var img = try zigimg.Image.fromMemory(allocator, pngData);
-            defer img.deinit();
-            const imgSize = gpu.Extent3D{
-                .width = @intCast(u32, img.width),
-                .height = @intCast(u32, img.height)
-            };
-            const tex = device.createTexture(&.{
-                .size = imgSize,
-                .format = .rgba8_unorm,
-                .usage = .{
-                    .texture_binding = true,
-                    .copy_dst = true,
-                    .render_attachment = true,
-                },
-            });
-            const dataLayout = gpu.Texture.DataLayout{
-                .bytes_per_row = @intCast(u32, img.width * 4),
-                .rows_per_image = @intCast(u32, img.height),
-            };
-            const queue = device.getQueue();
-            // TODO free if necessary
-            const dataRgba32 = blk: {
-                switch (img.pixels) {
-                    .rgba32 => |pixels| break :blk pixels,
-                    .rgb24 => |pixels| break :blk (try rgb24ToRgba32(allocator, pixels)).rgba32,
-                    else => @panic("unsupported image color format"),
-                }
-            };
-            // flip Y
-            var y: usize = 0;
-            const halfHeight = img.height / 2 - 1;
-            while (y < halfHeight) : (y += 1) {
-                const yOpposite = img.height - y - 1;
-                var x: usize = 0;
-                while (x < img.width) : (x += 1) {
-                    const temp = dataRgba32[y * img.width + x];
-                    dataRgba32[y * img.width + x] = dataRgba32[yOpposite * img.width + x];
-                    dataRgba32[yOpposite * img.width + x] = temp;
-                }
-            }
-            queue.writeTexture(&.{ .texture = tex }, &dataLayout, &imgSize, dataRgba32);
-
-            self.textures[@enumToInt(texture)] = .{
-                .texture = tex,
-            };
-        }
-
-        fn getTexture(self: *const Self, texture: TextureEnum) ?TextureData
-        {
-            return self.textures[@enumToInt(texture)];
-        }
-    };
-    return T;
-}
-
-const MAX_INSTANCES = 512;
+pub const App = @This();
 
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
 core: mach.Core,
 timer: mach.Timer,
-fps_timer: mach.Timer,
-window_title_timer: mach.Timer,
+fpsTimer: mach.Timer,
+windowTitleTimer: mach.Timer,
 pipeline: *gpu.RenderPipeline,
 queue: *gpu.Queue,
 vertexBuffer: *gpu.Buffer,
@@ -124,7 +34,16 @@ bindGroup: *gpu.BindGroup,
 depthTexture: *gpu.Texture,
 depthTextureView: *gpu.TextureView,
 
-assets: Assets(Texture),
+transientMemory: []u8,
+assets: render.Assets(Texture),
+inputState: input.InputState,
+prevTime: f32,
+tortoState: torto.State,
+
+fn getTransientAllocator(app: *App) std.heap.FixedBufferAllocator
+{
+    return std.heap.FixedBufferAllocator.init(app.transientMemory);
+}
 
 pub fn init(app: *App) !void
 {
@@ -132,6 +51,10 @@ pub fn init(app: *App) !void
     try app.core.init(allocator, .{
         .size = .{ .width = 1280, .height = 800 },
     });
+
+    app.transientMemory = try allocator.alloc(u8, 1024 * 1024 * 1024);
+    var transientAllocator = app.getTransientAllocator();
+    const tempAllocator = transientAllocator.allocator();
 
     const shaderModule = app.core.device().createShaderModuleWGSL("texQuads.wgsl", @embedFile("texQuads.wgsl"));
 
@@ -200,8 +123,8 @@ pub fn init(app: *App) !void
     std.mem.copy(vertices.Vertex, vertexMapped.?, vertices.quad[0..]);
     vertexBuffer.unmap();
 
-    try app.assets.loadTexture(Texture.Zig, assets.zigPng, app.core.device(), allocator);
-    try app.assets.loadTexture(Texture.Torto, assets.tortoPng, app.core.device(), allocator);
+    try app.assets.loadTexture(Texture.Zig, assets.zigPng, app.core.device(), tempAllocator);
+    try app.assets.loadTexture(Texture.Torto, assets.tortoPng, app.core.device(), tempAllocator);
 
     // Create a sampler with linear filtering for smooth interpolation.
     const sampler = app.core.device().createSampler(&.{
@@ -211,10 +134,11 @@ pub fn init(app: *App) !void
 
     const uniformBuffer = app.core.device().createBuffer(&.{
         .usage = .{ .copy_dst = true, .uniform = true },
-        .size = @sizeOf(UniformData) * MAX_INSTANCES,
+        .size = @sizeOf(render.UniformData) * render.MAX_INSTANCES,
         .mapped_at_creation = false,
     });
 
+    // TODO inline-for this thingy and the binding generation
     const zigTexture = app.assets.getTexture(Texture.Zig) orelse return error.NoZig;
     const tortoTexture = app.assets.getTexture(Texture.Torto) orelse return error.NoTorto;
 
@@ -222,13 +146,14 @@ pub fn init(app: *App) !void
         &gpu.BindGroup.Descriptor.init(.{
             .layout = pipeline.getBindGroupLayout(0),
             .entries = &.{
-                gpu.BindGroup.Entry.buffer(0, uniformBuffer, 0, @sizeOf(UniformData) * MAX_INSTANCES),
+                gpu.BindGroup.Entry.buffer(0, uniformBuffer, 0, @sizeOf(render.UniformData) * render.MAX_INSTANCES),
                 gpu.BindGroup.Entry.sampler(1, sampler),
+                // NOTE: This must match the Texture enum order!
                 gpu.BindGroup.Entry.textureView(
-                    2, tortoTexture.texture.createView(&gpu.TextureView.Descriptor{})
+                    2, zigTexture.texture.createView(&gpu.TextureView.Descriptor{})
                 ),
                 gpu.BindGroup.Entry.textureView(
-                    3, zigTexture.texture.createView(&gpu.TextureView.Descriptor{})
+                    3, tortoTexture.texture.createView(&gpu.TextureView.Descriptor{})
                 ),
             },
         }),
@@ -254,8 +179,8 @@ pub fn init(app: *App) !void
     });
 
     app.timer = try mach.Timer.start();
-    app.fps_timer = try mach.Timer.start();
-    app.window_title_timer = try mach.Timer.start();
+    app.fpsTimer = try mach.Timer.start();
+    app.windowTitleTimer = try mach.Timer.start();
     app.pipeline = pipeline;
     app.queue = app.core.device().getQueue();
     app.vertexBuffer = vertexBuffer;
@@ -265,14 +190,20 @@ pub fn init(app: *App) !void
     app.depthTextureView = depthTextureView;
 
     try app.assets.init();
+    app.inputState.init();
+    app.tortoState.init();
 
     shaderModule.release();
 }
 
 pub fn deinit(app: *App) void
 {
-    defer _ = gpa.deinit();
-    defer app.core.deinit();
+    defer {
+        const allocator = gpa.allocator();
+        allocator.free(app.transientMemory);
+        app.core.deinit();
+        _ = gpa.deinit();
+    }
 
     app.vertexBuffer.release();
     app.uniformBuffer.release();
@@ -283,10 +214,14 @@ pub fn deinit(app: *App) void
 
 pub fn update(app: *App) !bool
 {
+    var transientAllocator = app.getTransientAllocator();
+    const tempAllocator = transientAllocator.allocator();
+
     var iter = app.core.pollEvents();
     while (iter.next()) |event| {
         switch (event) {
             .key_press => |ev| {
+                const vsyncPrev = app.core.vsync();
                 switch (ev.key) {
                     .space => return true,
                     .one => app.core.setVSync(.none),
@@ -294,7 +229,10 @@ pub fn update(app: *App) !bool
                     .three => app.core.setVSync(.triple),
                     else => {},
                 }
-                std.debug.print("vsync mode changed to {s}\n", .{@tagName(app.core.vsync())});
+                const vsyncNew = app.core.vsync();
+                if (vsyncNew != vsyncPrev) {
+                    std.log.info("vsync mode changed to {s}", .{@tagName(app.core.vsync())});
+                }
             },
             .framebuffer_resize => |ev| {
                 // If window is resized, recreate depth buffer otherwise we cannot use it.
@@ -323,6 +261,8 @@ pub fn update(app: *App) !bool
             .close => return true,
             else => {},
         }
+
+        try app.inputState.addEvent(event);
     }
 
     const backBufferView = app.core.swapChain().getCurrentTextureView();
@@ -344,35 +284,21 @@ pub fn update(app: *App) !bool
         },
     });
 
-    var uniforms: [4]UniformData = undefined;
+    var renderState: render.RenderState = undefined;
+    try renderState.init(tempAllocator);
 
-    {
-        const time = app.timer.read();
-        const period = 1.0;
-        const modTime = std.math.modf(time / period);
-        const t = modTime.fpart;
-        uniforms[0] = UniformData{
-            .pos = .{ t * 0.5, t * 0.25, 0 },
-            .scale = .{ 1, 1 },
-            .uvPos = .{ 0, 0 },
-            .uvScale = .{ 1 - t * 0.2, 1 - t * 0.4 },
-            .textureIndex = 0,
-        };
-        uniforms[1] = UniformData{
-            .pos = .{ -0.5, -0.5, 0 },
-            .scale = .{ 0.2, 0.2 },
-            .uvPos = .{ 0, 0 },
-            .uvScale = .{ 1 + t, 1 - t },
-            .textureIndex = 1,
-        };
-        encoder.writeBuffer(app.uniformBuffer, 0, &uniforms);
-    }
+    const time = app.timer.read();
+    const deltaTime = time - app.prevTime;
+    try torto.update(app, deltaTime, &renderState);
+    app.prevTime = time;
+
+    renderState.pushToUniformBuffer(encoder, app.uniformBuffer);
 
     const pass = encoder.beginRenderPass(&renderPassInfo);
     pass.setPipeline(app.pipeline);
     pass.setVertexBuffer(0, app.vertexBuffer, 0, @sizeOf(vertices.Vertex) * vertices.quad.len);
     pass.setBindGroup(0, app.bindGroup, &.{});
-    pass.draw(vertices.quad.len, 2, 0, 0);
+    pass.draw(vertices.quad.len, renderState.n, 0, 0);
     pass.end();
     pass.release();
 
@@ -384,11 +310,10 @@ pub fn update(app: *App) !bool
     app.core.swapChain().present();
     backBufferView.release();
 
-    const delta_time = app.fps_timer.lap();
-    if (app.window_title_timer.read() >= 1.0) {
-        app.window_title_timer.reset();
-        var buf: [32]u8 = undefined;
-        const title = try std.fmt.bufPrintZ(&buf, "Torto [ FPS: {d} ]", .{@floor(1 / delta_time)});
+    const fpsDeltaTime = app.fpsTimer.lap();
+    if (app.windowTitleTimer.read() >= 1.0) {
+        app.windowTitleTimer.reset();
+        const title = try std.fmt.allocPrintZ(tempAllocator, "Torto [ FPS: {d} ]", .{@floor(1 / fpsDeltaTime)});
         app.core.setTitle(title);
     }
 
