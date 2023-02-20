@@ -223,7 +223,7 @@ pub fn update(app: *App) !bool
             .key_press => |ev| {
                 const vsyncPrev = app.core.vsync();
                 switch (ev.key) {
-                    .space => return true,
+                    .escape  => return true,
                     .one => app.core.setVSync(.none),
                     .two => app.core.setVSync(.double),
                     .three => app.core.setVSync(.triple),

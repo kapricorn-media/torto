@@ -1,5 +1,5 @@
 struct Uniform {
-    pos: vec3<f32>,
+    posAngle: vec4<f32>,
     scale: vec2<f32>,
     uvPos: vec2<f32>,
     uvScale: vec2<f32>,
@@ -14,15 +14,27 @@ struct VertexOutput {
     @location(1) @interpolate(flat) textureIndex: u32,
 };
 
+// Rotates 2D vector "v" around the origin by angle "angle" (in radians).
+fn rotateVec2(v: vec2<f32>, angle: f32) -> vec2<f32>
+{
+    let sinA = sin(angle);
+    let cosA = cos(angle);
+    return vec2<f32>(v.x * cosA - v.y * sinA, v.y * cosA + v.x * sinA);
+}
+
 @vertex
 fn vertexMain(
     @builtin(instance_index) instanceIdx : u32,
     @location(0) position : vec3<f32>,
     @location(1) uv : vec2<f32>) -> VertexOutput
 {
-    var u = uniforms[instanceIdx];
+    let u = uniforms[instanceIdx];
+    let scaled = position.xy * u.scale;
+    let halfScale = u.scale / 2.0;
+    let scaledRotated = rotateVec2(scaled - halfScale, u.posAngle.w) + halfScale;
+    let pos = vec3<f32>(scaledRotated, 0) + u.posAngle.xyz;
+
     var output : VertexOutput;
-    var pos: vec3<f32> = vec3<f32>(position.xy * u.scale, position.z) + u.pos;
     output.Position = vec4<f32>(pos, 1);
     output.fragUv = uv * u.uvScale + u.uvPos;
     output.textureIndex = u.textureIndex;

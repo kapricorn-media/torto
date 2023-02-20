@@ -7,12 +7,16 @@ const render = @import("render.zig");
 pub const State = struct {
     x: f32,
     y: f32,
+    angle: f32,
 
     // Set initial values
     pub fn init(state: *State) void
     {
-        state.x = 0;
-        state.y = 0;
+        state.* = .{
+            .x = 0,
+            .y = 0,
+            .angle = 0,
+        };
     }
 };
 
@@ -39,9 +43,17 @@ pub fn update(app: *App, deltaTime: f32, renderState: *render.RenderState) !void
         state.y += speed * deltaTime;
     }
 
+    if (input.keyPressed(.q)) {
+        state.angle += std.math.pi * deltaTime;
+    }
+    if (input.keyPressed(.e)) {
+        state.angle -= std.math.pi * deltaTime;
+    }
+
     try renderState.drawTexturedQuad(
         .{state.x, state.y},
         0,
+        state.angle,
         .{300, 150},
         Texture.Torto,
         windowSizeF

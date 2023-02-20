@@ -7,7 +7,7 @@ const zigimg = @import("zigimg");
 pub const MAX_INSTANCES = 512;
 
 pub const UniformData = struct {
-    pos: @Vector(3, f32),
+    posAngle: @Vector(4, f32),
     scale: @Vector(2, f32),
     uvPos: @Vector(2, f32),
     uvScale: @Vector(2, f32),
@@ -116,6 +116,7 @@ pub const RenderState = struct {
     pub fn drawTexturedQuadNdc(
         self: *Self,
         pos: @Vector(3, f32),
+        angle: f32,
         scale: @Vector(2, f32),
         uvPos: @Vector(2, f32),
         uvScale: @Vector(2, f32),
@@ -125,7 +126,7 @@ pub const RenderState = struct {
             return error.Full;
         }
         self.texturedQuads[self.n] = UniformData {
-            .pos = pos,
+            .posAngle = .{pos[0], pos[1], pos[2], angle},
             .scale = scale,
             .uvPos = uvPos,
             .uvScale = uvScale,
@@ -138,6 +139,7 @@ pub const RenderState = struct {
         self: *Self,
         pos: @Vector(2, f32),
         depth: f32,
+        angle: f32,
         scale: @Vector(2, f32),
         texture: anytype,
         screenSize: @Vector(2, f32)) !void
@@ -145,6 +147,7 @@ pub const RenderState = struct {
         const posNdc = pixelPosToNdc(pos, screenSize);
         try self.drawTexturedQuadNdc(
             .{posNdc[0], posNdc[1], depth},
+            angle,
             pixelSizeToNdc(scale, screenSize),
             .{0, 0},
             .{1, 1},
