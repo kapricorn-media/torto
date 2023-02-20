@@ -82,7 +82,10 @@ pub fn Assets(comptime TextureEnum: type) type
                 switch (img.pixels) {
                     .rgba32 => |pixels| break :blk pixels,
                     .rgb24 => |pixels| break :blk (try rgb24ToRgba32(allocator, pixels)).rgba32,
-                    else => @panic("unsupported image color format"),
+                    else => {
+                        std.log.err("Invalid image pixel format {s}", .{std.meta.tagName(img.pixels)});
+                        return error.UnsupportedImage;
+                    },
                 }
             };
             rgba32FlipY(img.width, img.height, dataRgba32);
