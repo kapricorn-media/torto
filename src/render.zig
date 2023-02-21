@@ -3,15 +3,20 @@ const std = @import("std");
 const gpu = @import("gpu");
 const zigimg = @import("zigimg");
 
-// max number of quad texture instances in 1 draw call
-pub const MAX_INSTANCES = 512;
-
-pub const UniformData = struct {
+pub const InstanceData = extern struct {
     posAngle: @Vector(4, f32),
-    scale: @Vector(2, f32),
+    size: @Vector(2, f32),
     uvPos: @Vector(2, f32),
-    uvScale: @Vector(2, f32),
+    uvSize: @Vector(2, f32),
     textureIndex: u32,
+};
+
+pub const UniformData = extern struct {
+    // max number of quad texture instances in 1 draw call
+    pub const MAX_INSTANCES = 512;
+
+    instances: [MAX_INSTANCES]InstanceData,
+    screenSize: @Vector(2, f32),
 };
 
 const TextureData = struct {
@@ -106,36 +111,13 @@ pub fn Assets(comptime TextureEnum: type) type
 
 pub const RenderState = struct {
     n: u32,
-    texturedQuads: []UniformData,
+    uniformData: UniformData,
 
     const Self = @This();
 
-    pub fn init(self: *Self, allocator: std.mem.Allocator) !void
+    pub fn init(self: *Self) void
     {
         self.n = 0;
-        self.texturedQuads = try allocator.alloc(UniformData, MAX_INSTANCES);
-    }
-
-    pub fn drawTexturedQuadNdc(
-        self: *Self,
-        pos: @Vector(3, f32),
-        angle: f32,
-        scale: @Vector(2, f32),
-        uvPos: @Vector(2, f32),
-        uvScale: @Vector(2, f32),
-        texture: anytype) !void
-    {
-        if (self.n >= MAX_INSTANCES) {
-            return error.Full;
-        }
-        self.texturedQuads[self.n] = UniformData {
-            .posAngle = .{pos[0], pos[1], pos[2], angle},
-            .scale = scale,
-            .uvPos = uvPos,
-            .uvScale = uvScale,
-            .textureIndex = @enumToInt(texture),
-        };
-        self.n += 1;
     }
 
     pub fn drawTexturedQuad(
@@ -143,33 +125,25 @@ pub const RenderState = struct {
         pos: @Vector(2, f32),
         depth: f32,
         angle: f32,
-        scale: @Vector(2, f32),
-        texture: anytype,
-        screenSize: @Vector(2, f32)) !void
+        size: @Vector(2, f32),
+        texture: anytype) !void
     {
-        const posNdc = pixelPosToNdc(pos, screenSize);
-        try self.drawTexturedQuadNdc(
-            .{posNdc[0], posNdc[1], depth},
-            angle,
-            pixelSizeToNdc(scale, screenSize),
-            .{0, 0},
-            .{1, 1},
-            texture
-        );
+        if (self.n >= UniformData.MAX_INSTANCES) {
+            return error.Full;
+        }
+        self.uniformData.instances[self.n] = .{
+            .posAngle = .{pos[0], pos[1], depth, angle},
+            .size = size,
+            .uvPos = .{0, 0},
+            .uvSize = .{1, 1},
+            .textureIndex = @enumToInt(texture),
+        };
+        self.n += 1;
     }
 
-    pub fn pushToUniformBuffer(self: *const Self, encoder: *gpu.CommandEncoder, uniformBuffer: *gpu.Buffer) void
+    pub fn pushToUniformBuffer(self: *Self, screenSize: @Vector(2, f32), encoder: *gpu.CommandEncoder, uniformBuffer: *gpu.Buffer) void
     {
-        encoder.writeBuffer(uniformBuffer, 0, self.texturedQuads);
+        self.uniformData.screenSize = screenSize;
+        encoder.writeBuffer(uniformBuffer, 0, std.mem.asBytes(&self.uniformData));
     }
 };
-
-fn pixelPosToNdc(pos: @Vector(2, f32), screenSize: @Vector(2, f32)) @Vector(2, f32)
-{
-    return pos / screenSize * @Vector(2, f32) {2, 2} - @Vector(2, f32) {1, 1};
-}
-
-fn pixelSizeToNdc(size: @Vector(2, f32), screenSize: @Vector(2, f32)) @Vector(2, f32)
-{
-    return size / screenSize * @Vector(2, f32) {2, 2};
-}

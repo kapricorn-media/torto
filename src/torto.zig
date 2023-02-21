@@ -29,6 +29,14 @@ pub fn update(app: *App, deltaTime: f32, renderState: *render.RenderState) !void
         @intToFloat(f32, windowSize.width), @intToFloat(f32, windowSize.height)
     };
 
+    // Object depths are in the range [0.0, 1.0), where objects with smaller depth numbers are "on top".
+    const depthBackground = 0.80;
+    const depthTorti = 0.50;
+
+    // Draw background first
+    // TODO pixel size should be adjusted to the background's aspect ratio. Image will stretch as is.
+    try renderState.drawTexturedQuad(.{0, 0}, depthBackground, 0.0, windowSizeF, Texture.Background);
+
     const speed = 500.0;
     if (input.keyPressed(.a) or input.keyPressed(.left)) {
         state.x -= speed * deltaTime;
@@ -50,12 +58,14 @@ pub fn update(app: *App, deltaTime: f32, renderState: *render.RenderState) !void
         state.angle -= std.math.pi * deltaTime;
     }
 
+    const tortiPixelSize = @Vector(2, f32) {
+        300, 150
+    };
     try renderState.drawTexturedQuad(
         .{state.x, state.y},
-        0,
+        depthTorti,
         state.angle,
-        .{300, 150},
-        Texture.Torto,
-        windowSizeF
+        tortiPixelSize,
+        Texture.Torto
     );
 }

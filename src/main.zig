@@ -16,7 +16,17 @@ const assets = @import("assets");
 pub const Texture = enum(u8) {
     Zig = 0,
     Torto,
+    Background,
 };
+
+fn getTexturePngData(texture: Texture) []const u8
+{
+    switch (texture) {
+        .Zig => return assets.zigPng,
+        .Torto => return assets.tortoPng,
+        .Background => return assets.backgroundPng,
+    }
+}
 
 pub const App = @This();
 
@@ -134,28 +144,29 @@ pub fn init(app: *App) !void
 
     const uniformBuffer = app.core.device().createBuffer(&.{
         .usage = .{ .copy_dst = true, .uniform = true },
-        .size = @sizeOf(render.UniformData) * render.MAX_INSTANCES,
+        .size = @sizeOf(render.UniformData),
         .mapped_at_creation = false,
     });
 
-    // TODO inline-for this thingy and the binding generation
-    const zigTexture = app.assets.getTexture(Texture.Zig) orelse return error.NoZig;
-    const tortoTexture = app.assets.getTexture(Texture.Torto) orelse return error.NoTorto;
+    const numTextures = @typeInfo(Texture).Enum.fields.len;
+
+    var bindGroupEntries = try tempAllocator.alloc(gpu.BindGroup.Entry, 2 + numTextures);
+    bindGroupEntries[0] = gpu.BindGroup.Entry.buffer(0, uniformBuffer, 0, @sizeOf(render.UniformData));
+    bindGroupEntries[1] = gpu.BindGroup.Entry.sampler(1, sampler);
+
+    inline for (std.meta.tags(Texture)) |texture, i| {
+        const pngData = getTexturePngData(texture);
+        try app.assets.loadTexture(texture, pngData, app.core.device(), tempAllocator);
+        const gpuTexture = app.assets.getTexture(texture) orelse return error.NoTextureAfterLoad;
+        bindGroupEntries[2 + i] = gpu.BindGroup.Entry.textureView(
+            2 + i, gpuTexture.texture.createView(&gpu.TextureView.Descriptor{})
+        );
+    }
 
     const bindGroup = app.core.device().createBindGroup(
         &gpu.BindGroup.Descriptor.init(.{
             .layout = pipeline.getBindGroupLayout(0),
-            .entries = &.{
-                gpu.BindGroup.Entry.buffer(0, uniformBuffer, 0, @sizeOf(render.UniformData) * render.MAX_INSTANCES),
-                gpu.BindGroup.Entry.sampler(1, sampler),
-                // NOTE: This must match the Texture enum order!
-                gpu.BindGroup.Entry.textureView(
-                    2, zigTexture.texture.createView(&gpu.TextureView.Descriptor{})
-                ),
-                gpu.BindGroup.Entry.textureView(
-                    3, tortoTexture.texture.createView(&gpu.TextureView.Descriptor{})
-                ),
-            },
+            .entries = bindGroupEntries,
         }),
     );
 
@@ -223,7 +234,7 @@ pub fn update(app: *App) !bool
             .key_press => |ev| {
                 const vsyncPrev = app.core.vsync();
                 switch (ev.key) {
-                    .escape  => return true,
+                    .escape, .zero  => return true,
                     .one => app.core.setVSync(.none),
                     .two => app.core.setVSync(.double),
                     .three => app.core.setVSync(.triple),
@@ -284,15 +295,19 @@ pub fn update(app: *App) !bool
         },
     });
 
-    var renderState: render.RenderState = undefined;
-    try renderState.init(tempAllocator);
+    var renderState = try tempAllocator.create(render.RenderState);
+    renderState.init();
 
     const time = app.timer.read();
     const deltaTime = time - app.prevTime;
-    try torto.update(app, deltaTime, &renderState);
+    try torto.update(app, deltaTime, renderState);
     app.prevTime = time;
 
-    renderState.pushToUniformBuffer(encoder, app.uniformBuffer);
+    const windowSize = app.core.size();
+    const windowSizeF: @Vector(2, f32) = .{
+        @intToFloat(f32, windowSize.width), @intToFloat(f32, windowSize.height)
+    };
+    renderState.pushToUniformBuffer(windowSizeF, encoder, app.uniformBuffer);
 
     const pass = encoder.beginRenderPass(&renderPassInfo);
     pass.setPipeline(app.pipeline);
